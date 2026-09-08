@@ -25,7 +25,7 @@ import { EnhanceResult, PipelineParams, RgbImage, StageReport } from './types';
  * Bump this whenever DEFAULT_PARAMS or any stage changes.
  * Two outputs carrying the same version are directly comparable.
  */
-export const PIPELINE_VERSION = '1.1.0';
+export const PIPELINE_VERSION = '1.2.0';
 
 /**
  * Frozen parameters. These are not exposed as sliders on purpose: the value of
@@ -41,11 +41,11 @@ export const DEFAULT_PARAMS: PipelineParams = {
   illuminationMaxGain: 1.6,
   denoiseRadius: 2,
   denoiseRangeSigma: 26,
-  denoiseStrength: 0.75,
+  denoiseStrength: 0.85,
   contrastStrength: 0.55,
   contrastPivot: 0.18,
   contrastFloor: 8,
-  sharpenAmount: 0.8,
+  sharpenAmount: 1.4,
   sharpenRadius: 1.2,
   sharpenClampEpsilon: 6,
   upscale: 2,
