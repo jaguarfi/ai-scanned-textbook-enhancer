@@ -8,22 +8,27 @@ import {
   ArrowLeftRight,
   RotateCcw,
   ShieldCheck,
+  ShieldAlert,
   Move,
   FileCode,
+  Lock,
+  Check,
 } from 'lucide-react';
-import { EnhancedImageItem } from '../types';
+import { EnhancedImageItem, EnhancementEngine } from '../types';
 import { formatBytes } from '../utils/imageProcessing';
 
 interface CompareModalProps {
   image: EnhancedImageItem;
   onClose: () => void;
   onDownload: (image: EnhancedImageItem) => void;
+  onSelectEngine?: (imageId: string, engine: EnhancementEngine) => void;
 }
 
 export const CompareModal: React.FC<CompareModalProps> = ({
   image,
   onClose,
   onDownload,
+  onSelectEngine,
 }) => {
   const [sliderPos, setSliderPos] = useState(50); // percentage 0-100
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
@@ -37,8 +42,23 @@ export const CompareModal: React.FC<CompareModalProps> = ({
   const sideBySideLeftRef = useRef<HTMLDivElement>(null);
   const sideBySideRightRef = useRef<HTMLDivElement>(null);
 
-  const enhancedSrc = image.enhancedUrl || image.originalUrl;
+  // Which engine's result is on screen. Independent of which one is selected
+  // for export, so the user can inspect one without committing to it.
+  const available = (['deterministic', 'ai'] as EnhancementEngine[]).filter(
+    (engine) => image.variants?.[engine]
+  );
+  const [viewEngine, setViewEngine] = useState<EnhancementEngine | undefined>(
+    image.selectedEngine || available[0]
+  );
+
+  const variant = viewEngine ? image.variants?.[viewEngine] : undefined;
+  const fidelity = variant?.fidelity;
+  const enhancedSrc = variant?.url || image.enhancedUrl || image.originalUrl;
   const originalSrc = image.originalUrl;
+  const enhancedLabel = viewEngine === 'ai' ? 'Gemini AI' : 'Deterministic';
+  const enhancedWidth = variant?.width || image.enhancedWidth || image.originalWidth;
+  const enhancedHeight = variant?.height || image.enhancedHeight || image.originalHeight;
+  const isSelectedForExport = Boolean(viewEngine && image.selectedEngine === viewEngine);
 
   const updateSlider = (clientX: number) => {
     if (!containerRef.current) return;
@@ -126,22 +146,61 @@ export const CompareModal: React.FC<CompareModalProps> = ({
                 <h3 className="font-semibold text-slate-900 text-base leading-snug truncate max-w-xs sm:max-w-md">
                   {image.name}
                 </h3>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                  Content Preserved
-                </span>
+                {/* Only claimed when a fidelity check actually ran and passed.
+                    A generative result carries no such guarantee. */}
+                {fidelity?.passed ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                    Content Verified
+                  </span>
+                ) : fidelity ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                    <ShieldAlert className="w-3 h-3 text-rose-600" />
+                    Needs Review
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                    <ShieldAlert className="w-3 h-3 text-amber-600" />
+                    Unverified
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
                 <span>Original: {image.originalWidth} × {image.originalHeight}px</span>
                 <span>•</span>
                 <span className="text-indigo-600 font-medium">
-                  Enhanced: {image.enhancedWidth || image.originalWidth} × {image.enhancedHeight || image.originalHeight}px
+                  {enhancedLabel}: {enhancedWidth} × {enhancedHeight}px
                 </span>
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Engine Toggle, shown once more than one result exists */}
+            {available.length > 1 && (
+              <div className="flex bg-slate-200/70 p-0.5 rounded-lg text-xs font-medium">
+                {available.map((engine) => (
+                  <button
+                    key={engine}
+                    type="button"
+                    onClick={() => setViewEngine(engine)}
+                    className={`px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1 ${
+                      viewEngine === engine
+                        ? 'bg-white shadow-xs text-slate-900'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {engine === 'deterministic' ? (
+                      <Lock className="w-3 h-3" />
+                    ) : (
+                      <Sparkles className="w-3 h-3" />
+                    )}
+                    {engine === 'deterministic' ? 'Deterministic' : 'Gemini AI'}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* View Mode Toggle */}
             <div className="flex bg-slate-200/70 p-0.5 rounded-lg text-xs font-medium text-slate-700">
               <button
@@ -295,7 +354,7 @@ export const CompareModal: React.FC<CompareModalProps> = ({
               </div>
               <div className="absolute top-3 right-3 bg-indigo-600/90 backdrop-blur-md text-white text-xs font-medium px-2.5 py-1 rounded-md shadow-xs pointer-events-none flex items-center gap-1">
                 <Sparkles className="w-3 h-3" />
-                AI Enhanced
+                {enhancedLabel}
               </div>
             </div>
           ) : (
@@ -333,7 +392,7 @@ export const CompareModal: React.FC<CompareModalProps> = ({
               >
                 <div className="absolute top-2.5 left-2.5 z-20 bg-indigo-600 text-white text-xs px-2.5 py-1 rounded-md flex items-center gap-1 font-medium shadow-sm border border-indigo-400/40">
                   <Sparkles className="w-3 h-3" />
-                  Enhanced ({image.enhancedWidth || image.originalWidth} × {image.enhancedHeight || image.originalHeight})
+                  {enhancedLabel} ({enhancedWidth} × {enhancedHeight})
                 </div>
                 <div
                   className="w-full h-full flex items-center justify-center transition-transform"
@@ -355,11 +414,81 @@ export const CompareModal: React.FC<CompareModalProps> = ({
           )}
         </div>
 
+        {/* Fidelity report for the result currently on screen */}
+        {fidelity && (
+          <div
+            className={`px-6 py-3 border-t text-xs ${
+              fidelity.passed
+                ? 'bg-emerald-50/60 border-emerald-100 text-emerald-900'
+                : 'bg-rose-50/60 border-rose-100 text-rose-900'
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              {fidelity.passed ? (
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              ) : (
+                <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              )}
+              <div className="flex-1">
+                <p className="font-semibold mb-1">
+                  {fidelity.passed
+                    ? 'Verified against the source scan'
+                    : 'Differences found against the source scan'}
+                </p>
+
+                {fidelity.passed ? (
+                  <p className="opacity-80 leading-relaxed">
+                    No invented marks, no erased content, background tone within{' '}
+                    {fidelity.paperToneDelta.toFixed(1)} levels of the original, page
+                    structure matched at {(fidelity.structuralCorrelation * 100).toFixed(1)}%.
+                  </p>
+                ) : (
+                  <ul className="space-y-0.5 opacity-90 leading-relaxed list-disc pl-4">
+                    {fidelity.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 font-mono text-[11px] opacity-70">
+                  <span>added {(fidelity.addedInkRatio * 100).toFixed(3)}%</span>
+                  <span>removed {(fidelity.lostInkRatio * 100).toFixed(3)}%</span>
+                  <span>largest new mark {fidelity.largestAddedCluster}px</span>
+                  <span>worst local erasure {(fidelity.worstBlockLossRatio * 100).toFixed(0)}%</span>
+                  <span>tone Δ{fidelity.paperToneDelta.toFixed(1)}</span>
+                  {typeof variant?.deskewAngle === 'number' && (
+                    <span>deskew {variant.deskewAngle.toFixed(2)}°</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!fidelity && viewEngine === 'ai' && (
+          <div className="px-6 py-3 border-t border-amber-100 bg-amber-50/60 text-xs text-amber-900">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                This page was redrawn by a generative model, so it is not guaranteed to
+                match the source and will differ between runs. Inspect it against the
+                original before classroom use.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Diagnostic Metrics & Actions Footer */}
         <div className="px-6 py-4 bg-white border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="text-sm text-slate-500">Smart Auto Processed</span>
-            <span className="text-sm font-medium text-slate-700">{formatBytes(image.enhancedSize || image.originalSize)}</span>
+            <span className="text-sm text-slate-500">
+              {viewEngine === 'deterministic'
+                ? `Deterministic pipeline${variant?.pipelineVersion ? ` v${variant.pipelineVersion}` : ''}`
+                : 'Gemini generative render'}
+            </span>
+            <span className="text-sm font-medium text-slate-700">
+              {formatBytes(variant?.size || image.enhancedSize || image.originalSize)}
+            </span>
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
@@ -370,6 +499,24 @@ export const CompareModal: React.FC<CompareModalProps> = ({
             >
               Close
             </button>
+
+            {/* Commits this engine's result as the one exported everywhere. */}
+            {viewEngine && available.length > 1 && (
+              <button
+                type="button"
+                disabled={isSelectedForExport}
+                onClick={() => onSelectEngine?.(image.id, viewEngine)}
+                className={`px-3.5 py-2 text-sm font-medium rounded-xl border transition-all flex items-center gap-1.5 ${
+                  isSelectedForExport
+                    ? 'text-emerald-700 bg-emerald-50 border-emerald-200 cursor-default'
+                    : 'text-slate-700 bg-white border-slate-200 hover:bg-slate-50 cursor-pointer'
+                }`}
+                title="Use this version for download, ZIP export and PDF compilation"
+              >
+                <Check className="w-4 h-4" />
+                <span>{isSelectedForExport ? 'In use for export' : 'Use this version'}</span>
+              </button>
+            )}
 
             {image.vectorSvgUrl && (
               <button
