@@ -9,6 +9,11 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+const stripBase64Prefix = (value: string) => {
+  if (!value) return '';
+  return value.replace(/^data:image\/\w+;base64,/, '').replace(/^data:.*;base64,/, '');
+};
+
 // High body limit for base64 images
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -62,7 +67,7 @@ app.post('/api/gemini/analyze', async (req, res) => {
     }
 
     // Clean base64 header if present
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const cleanBase64 = stripBase64Prefix(imageBase64);
 
     const schemaConfig = {
       responseMimeType: 'application/json',

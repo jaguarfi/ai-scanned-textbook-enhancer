@@ -1,19 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
-import {
-  Sparkles,
-  Copy,
-  FileText,
-  Upload,
-  AlertTriangle,
-  CheckCircle2,
-  Sliders,
-  FolderArchive,
-  Trash2,
-  Info,
-  X,
-  Plus,
-} from 'lucide-react';
+import { Copy, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
 import { EnhancedImageItem, DuplicatePair } from './types';
 import {
   computeImageHash,
@@ -28,6 +15,20 @@ import { ImageCard } from './components/ImageCard';
 import { CompareModal } from './components/CompareModal';
 import { DuplicateDetectionModal } from './components/DuplicateDetectionModal';
 import { PdfCompileModal } from './components/PdfCompileModal';
+
+const resolveFileExtension = (fileType: string) => (fileType.includes('png') ? 'png' : 'jpg');
+const buildDownloadFilename = (name: string, fileType: string, suffix = '') => {
+  const baseName = name.replace(/\.[^/.]+$/, '');
+  return `${baseName}${suffix}.${resolveFileExtension(fileType)}`;
+};
+
+const readFileAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 
 export default function App() {
   const [images, setImages] = useState<EnhancedImageItem[]>([]);
@@ -118,15 +119,6 @@ export default function App() {
 
     setImages((prev) => [...prev, ...newItems]);
     showToast(`Added ${newItems.length} images successfully.`, 'success');
-  };
-
-  const readFileAsDataUrl = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
   };
 
   // Enhance with Gemini AI
@@ -294,9 +286,7 @@ export default function App() {
     const url = item.enhancedUrl || item.originalUrl;
     const a = document.createElement('a');
     a.href = url;
-    const ext = item.fileType.includes('png') ? 'png' : 'jpg';
-    const baseName = item.name.replace(/\.[^/.]+$/, '');
-    a.download = `${baseName}_enhanced.${ext}`;
+    a.download = buildDownloadFilename(item.name, item.fileType, '_enhanced');
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -309,14 +299,10 @@ export default function App() {
     showToast('Packing images into ZIP archive...', 'info');
     const zip = new JSZip();
 
-    for (let i = 0; i < images.length; i++) {
-      const item = images[i];
+    for (const item of images) {
       const url = item.enhancedUrl || item.originalUrl;
       const base64Data = url.replace(/^data:image\/\w+;base64,/, '');
-      const ext = item.fileType.includes('png') ? 'png' : 'jpg';
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
-      const isEnhanced = Boolean(item.enhancedUrl);
-      const filename = `${baseName}${isEnhanced ? '_enhanced' : ''}.${ext}`;
+      const filename = buildDownloadFilename(item.name, item.fileType, item.enhancedUrl ? '_enhanced' : '');
       zip.file(filename, base64Data, { base64: true });
     }
 

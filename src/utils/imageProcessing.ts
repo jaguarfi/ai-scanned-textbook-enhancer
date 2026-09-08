@@ -58,18 +58,70 @@ export async function computeImageHash(src: string): Promise<{ dHash: string; av
 }
 
 /**
- * Calculates similarity percentage between two 64-bit hashes
+ * Calculates similarity percentage between two 64-bit hashes.
+ * Returns 0 for invalid or mismatched inputs.
  */
 export function calculateHashSimilarity(hashA: string, hashB: string): number {
-  if (hashA.length !== hashB.length) return 0;
+  if (!hashA || !hashB || hashA.length !== hashB.length) return 0;
+
   let distance = 0;
   for (let i = 0; i < hashA.length; i++) {
     if (hashA[i] !== hashB[i]) {
       distance++;
     }
   }
-  const similarity = Math.max(0, 100 - (distance / hashA.length) * 100);
-  return Math.round(similarity * 10) / 10;
+
+  const similarity = 100 - (distance / hashA.length) * 100;
+  return Math.max(0, Math.min(100, Math.round(similarity * 10) / 10));
+}
+
+export function choosePreferredDuplicateImage(
+  imageA: EnhancedImageItem,
+  imageB: EnhancedImageItem
+): { recommendedKeepId: string; reason: string } {
+  const pixelsA = imageA.originalWidth * imageA.originalHeight;
+  const pixelsB = imageB.originalWidth * imageB.originalHeight;
+
+  if (imageA.status === 'enhanced' && imageB.status !== 'enhanced') {
+    return { recommendedKeepId: imageA.id, reason: 'Image on left is already AI enhanced' };
+  }
+
+  if (imageB.status === 'enhanced' && imageA.status !== 'enhanced') {
+    return { recommendedKeepId: imageB.id, reason: 'Image on right is already AI enhanced' };
+  }
+
+  if (pixelsA > pixelsB * 1.05) {
+    return {
+      recommendedKeepId: imageA.id,
+      reason: `Higher resolution (${imageA.originalWidth}×${imageA.originalHeight} vs ${imageB.originalWidth}×${imageB.originalHeight})`,
+    };
+  }
+
+  if (pixelsB > pixelsA * 1.05) {
+    return {
+      recommendedKeepId: imageB.id,
+      reason: `Higher resolution (${imageB.originalWidth}×${imageB.originalHeight} vs ${imageA.originalWidth}×${imageA.originalHeight})`,
+    };
+  }
+
+  if (imageA.originalSize > imageB.originalSize * 1.1) {
+    return {
+      recommendedKeepId: imageA.id,
+      reason: `Higher file quality (${formatBytes(imageA.originalSize)} vs ${formatBytes(imageB.originalSize)})`,
+    };
+  }
+
+  if (imageB.originalSize > imageA.originalSize * 1.1) {
+    return {
+      recommendedKeepId: imageB.id,
+      reason: `Higher file quality (${formatBytes(imageB.originalSize)} vs ${formatBytes(imageA.originalSize)})`,
+    };
+  }
+
+  return {
+    recommendedKeepId: imageA.id,
+    reason: 'Virtually identical; earlier upload preserved',
+  };
 }
 
 /**
@@ -90,8 +142,6 @@ export function findDuplicatePairs(images: EnhancedImageItem[], threshold = 82):
       if (processedPairKeys.has(pairKey)) continue;
 
       const similarity = calculateHashSimilarity(imgA.dHash, imgB.dHash);
-
-      // Check for exact match (same dimensions, same size, or identical hash)
       const exactMatch =
         imgA.dHash === imgB.dHash &&
         imgA.originalWidth === imgB.originalWidth &&
@@ -99,39 +149,7 @@ export function findDuplicatePairs(images: EnhancedImageItem[], threshold = 82):
 
       if (similarity >= threshold || exactMatch) {
         processedPairKeys.add(pairKey);
-
-        // Pick recommended image to keep:
-        // Priority 1: enhanced status
-        // Priority 2: resolution (pixels count)
-        // Priority 3: file size
-        const pixelsA = imgA.originalWidth * imgA.originalHeight;
-        const pixelsB = imgB.originalWidth * imgB.originalHeight;
-
-        let keepId = imgA.id;
-        let reason = 'Selected as default keeper';
-
-        if (imgA.status === 'enhanced' && imgB.status !== 'enhanced') {
-          keepId = imgA.id;
-          reason = 'Image on left is already AI enhanced';
-        } else if (imgB.status === 'enhanced' && imgA.status !== 'enhanced') {
-          keepId = imgB.id;
-          reason = 'Image on right is already AI enhanced';
-        } else if (pixelsA > pixelsB * 1.05) {
-          keepId = imgA.id;
-          reason = `Higher resolution (${imgA.originalWidth}×${imgA.originalHeight} vs ${imgB.originalWidth}×${imgB.originalHeight})`;
-        } else if (pixelsB > pixelsA * 1.05) {
-          keepId = imgB.id;
-          reason = `Higher resolution (${imgB.originalWidth}×${imgB.originalHeight} vs ${imgA.originalWidth}×${imgA.originalHeight})`;
-        } else if (imgA.originalSize > imgB.originalSize * 1.1) {
-          keepId = imgA.id;
-          reason = `Higher file quality (${formatBytes(imgA.originalSize)} vs ${formatBytes(imgB.originalSize)})`;
-        } else if (imgB.originalSize > imgA.originalSize * 1.1) {
-          keepId = imgB.id;
-          reason = `Higher file quality (${formatBytes(imgB.originalSize)} vs ${formatBytes(imgA.originalSize)})`;
-        } else {
-          keepId = imgA.id;
-          reason = 'Virtually identical; earlier upload preserved';
-        }
+        const { recommendedKeepId, reason } = choosePreferredDuplicateImage(imgA, imgB);
 
         pairs.push({
           id: `dup-${imgA.id}-${imgB.id}`,
@@ -139,7 +157,7 @@ export function findDuplicatePairs(images: EnhancedImageItem[], threshold = 82):
           imageB: imgB,
           similarity: exactMatch ? 100 : similarity,
           exactMatch,
-          recommendedKeepId: keepId,
+          recommendedKeepId,
           reason,
         });
       }
