@@ -25,7 +25,7 @@ import { EnhanceResult, PipelineParams, RgbImage, StageReport } from './types';
  * Bump this whenever DEFAULT_PARAMS or any stage changes.
  * Two outputs carrying the same version are directly comparable.
  */
-export const PIPELINE_VERSION = '1.0.0';
+export const PIPELINE_VERSION = '1.1.0';
 
 /**
  * Frozen parameters. These are not exposed as sliders on purpose: the value of

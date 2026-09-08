@@ -33,6 +33,17 @@ export function flattenIllumination(
   const field = new Float32Array(gridW * gridH);
   const reliable = new Uint8Array(gridW * gridH);
 
+  // Paper's own colour cast relative to its luminance. Lit paper stays close
+  // to this cast at any brightness, which is what lets a block's percentile
+  // luminance stand in for lighting. Printed colour - a highlighter stroke, a
+  // table header fill - has a cast nothing like the paper's, so a block
+  // dominated by one is not a lighting measurement at all.
+  const paperLumRef = Math.max(1, paper.luminance);
+  const castR = paper.r - paperLumRef;
+  const castG = paper.g - paperLumRef;
+  const castB = paper.b - paperLumRef;
+  const CAST_TOLERANCE = 24;
+
   // Per block, take the 90th-percentile luminance as the local substrate.
   // A percentile rather than the maximum keeps dust and specular flecks from
   // dragging the estimate upward.
@@ -64,12 +75,46 @@ export function flattenIllumination(
         }
       }
 
+      // Average the colour of pixels sitting near that percentile, the same
+      // way the page-wide paper tone is measured, to see whether this block's
+      // "substrate" is actually paper-coloured.
+      const lo = value - 6;
+      const hi = value + 6;
+      let rSum = 0;
+      let gSum = 0;
+      let bSum = 0;
+      let castN = 0;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const idx = (y * w + x) * 3;
+          const l = luma(data[idx], data[idx + 1], data[idx + 2]);
+          if (l >= lo && l <= hi) {
+            rSum += data[idx];
+            gSum += data[idx + 1];
+            bSum += data[idx + 2];
+            castN++;
+          }
+        }
+      }
+
+      let castMatches = true;
+      if (castN > 0) {
+        const blockLumRef = Math.max(1, value);
+        const dr = (rSum / castN - blockLumRef) - castR;
+        const dg = (gSum / castN - blockLumRef) - castG;
+        const db = (bSum / castN - blockLumRef) - castB;
+        const castDistance = Math.sqrt(dr * dr + dg * dg + db * db);
+        castMatches = castDistance <= CAST_TOLERANCE;
+      }
+
       const g = gy * gridW + gx;
       field[g] = value;
       // Blocks far darker than the page substrate are photographs or solid
-      // fills, not paper. Their brightness says nothing about the lighting, so
-      // they are filled in from surrounding paper instead.
-      reliable[g] = value >= paper.luminance - 45 ? 1 : 0;
+      // fills, not paper, and blocks whose colour cast does not match the
+      // paper's are printed colour rather than lit paper. Either way their
+      // brightness says nothing about the lighting, so they are filled in
+      // from surrounding paper instead.
+      reliable[g] = value >= paper.luminance - 45 && castMatches ? 1 : 0;
     }
   }
 
@@ -261,17 +306,41 @@ export function applyInkPaperCurve(
     lumMap[l] = paperLum * (1 - out);
   }
 
+  // The curve is derived purely from luminance, so applying it at full
+  // strength to a saturated pixel changes more than density: scaling every
+  // channel by the same ratio pushes the channel already nearest 255 into
+  // its clamp first, compressing the gap between channels less than the
+  // gap to paper grows, which reads as the colour turning more vivid. Ink,
+  // pencil and paper haze are all close to neutral, so this only bites
+  // coloured print - highlighter, callout fills, table shading - which is
+  // exactly the content that should be left alone. The chroma reference is
+  // the paper's own saturation, so a warm or yellowed substrate does not
+  // itself get treated as "coloured".
+  const paperChroma =
+    Math.max(paper.r, paper.g, paper.b) - Math.min(paper.r, paper.g, paper.b);
+  const NEUTRAL_MARGIN = 10;
+  const CHROMA_SOFTNESS = 40;
+
   for (let i = 0; i < data.length; i += 3) {
-    const l = luma(data[i], data[i + 1], data[i + 2]);
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const l = luma(r, g, b);
     if (l >= paperLum) continue; // Brighter than paper: leave untouched.
 
     const ratio = lumMap[Math.round(l)] / Math.max(1, l);
 
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    const excess = Math.max(0, chroma - paperChroma - NEUTRAL_MARGIN);
+    const chromaFactor = 1 / (1 + excess / CHROMA_SOFTNESS);
+    const effectiveRatio = 1 + (ratio - 1) * chromaFactor;
+
     // A shared per-pixel ratio preserves hue, so coloured print, highlights
-    // and pencil keep their identity instead of drifting toward grey.
-    data[i] = clampFloor(data[i] * ratio, params.contrastFloor);
-    data[i + 1] = clampFloor(data[i + 1] * ratio, params.contrastFloor);
-    data[i + 2] = clampFloor(data[i + 2] * ratio, params.contrastFloor);
+    // and pencil keep their identity instead of drifting toward grey; the
+    // chroma factor above controls how much of that ratio actually applies.
+    data[i] = clampFloor(r * effectiveRatio, params.contrastFloor);
+    data[i + 1] = clampFloor(g * effectiveRatio, params.contrastFloor);
+    data[i + 2] = clampFloor(b * effectiveRatio, params.contrastFloor);
   }
 
   return `strength ${params.contrastStrength}, pivot ${pivot}, anchored at paper luminance ${paperLum}`;
