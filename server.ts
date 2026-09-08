@@ -3,6 +3,8 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { enhanceDeterministic, PIPELINE_VERSION } from './server/pipeline/deterministic';
+import { enhanceWithAI } from './server/ai/enhance';
 
 dotenv.config();
 
@@ -39,6 +41,7 @@ app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
+    pipelineVersion: PIPELINE_VERSION,
   });
 });
 
@@ -183,89 +186,104 @@ app.post('/api/gemini/analyze', async (req, res) => {
 });
 
 /**
- * Gemini Generative Image Enhancement
+ * Deterministic page restoration.
+ *
+ * No model is involved. Every stage is a pure function of the input pixels and
+ * a frozen parameter set, so identical input bytes always yield identical
+ * output bytes - the reproducibility the generative endpoint below cannot
+ * offer. The response carries a fidelity report proving nothing was invented
+ * or erased, which the client surfaces to the user.
+ */
+app.post('/api/enhance/deterministic', async (req, res) => {
+  try {
+    const { imageBase64 } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ success: false, error: 'Missing imageBase64' });
+    }
+
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const input = Buffer.from(cleanBase64, 'base64');
+    if (input.length === 0) {
+      return res.status(400).json({ success: false, error: 'Image data could not be decoded' });
+    }
+
+    const result = await enhanceDeterministic(input);
+
+    return res.json({
+      success: true,
+      enhancedUrl: result.enhancedUrl,
+      width: result.width,
+      height: result.height,
+      size: result.size,
+      deskewAngle: result.deskewAngle,
+      paperTone: {
+        r: Math.round(result.paperTone.r),
+        g: Math.round(result.paperTone.g),
+        b: Math.round(result.paperTone.b),
+        luminance: Math.round(result.paperTone.luminance),
+      },
+      stages: result.stages,
+      fidelity: result.fidelity,
+      pipelineVersion: result.pipelineVersion,
+    });
+  } catch (err: any) {
+    console.warn('Deterministic enhancement failed:', err?.message || err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Deterministic enhancement failed',
+    });
+  }
+});
+
+/**
+ * Gemini generative enhancement.
+ *
+ * Kept alongside the deterministic engine so the two can be compared on the
+ * same page. Sampling is pinned, the page geometry is protected by padding to
+ * a supported aspect ratio, and the result is measured against the source -
+ * but a model that redraws the page cannot promise fidelity the way a filter
+ * chain can, so the returned report is the thing to trust, not the model.
  */
 app.post('/api/gemini/enhance', async (req, res) => {
   try {
-    const { imageBase64, mimeType = 'image/jpeg' } = req.body;
+    const { imageBase64 } = req.body;
     if (!imageBase64) {
-      return res.status(400).json({ error: 'Missing imageBase64' });
+      return res.status(400).json({ success: false, error: 'Missing imageBase64' });
     }
 
     const ai = getAIClient();
     if (!ai) {
       return res.status(400).json({
+        success: false,
         error: 'GEMINI_API_KEY is not configured on the server',
       });
     }
 
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-
-    // Try Gemini image enhancement
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType: mimeType,
-              },
-            },
-            {
-              text: req.body.prompt || 'I want a professional, high-resolution version of the uploaded file, restoring its clarity and layout. Recreate the verbatim text and complex layout with absolute precision. All text, tables, annotations, highlighted text, numbers, and formatting from the original must be preserved exactly, but rendered with ultra-crisp clarity. CRITICAL INSTRUCTION: Do NOT add any translations, or your own annotations. Do NOT solve any exercises. Do NOT hallucinate or add any content that is not explicitly present in the original image. Clean up the page by removing any scanning borders, maintaining a clean paper texture and even soft studio lighting.',
-            },
-          ],
-        },
-        config: {
-          imageConfig: {
-            imageSize: "2K"
-          }
-        }
-      });
-
-      let enhancedBase64 = '';
-      let responseText = '';
-
-      const candidates = response.candidates || [];
-      if (candidates[0]?.content?.parts) {
-        for (const part of candidates[0].content.parts) {
-          if (part.inlineData?.data) {
-            enhancedBase64 = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-            break;
-          } else if (part.text) {
-            responseText += part.text;
-          }
-        }
-      }
-
-      if (enhancedBase64) {
-        return res.json({
-          success: true,
-          enhancedUrl: enhancedBase64,
-          notes: responseText || 'Image reconstructed with Gemini AI',
-        });
-      } else {
-        console.warn('Gemini response returned no inlineData:', JSON.stringify(candidates, null, 2));
-        return res.json({
-          success: false,
-          message: 'No image data returned from model',
-          text: responseText,
-        });
-      }
-    } catch (modelErr: any) {
-      console.warn('Gemini generative image model temporary unavailable:', modelErr?.message || modelErr);
-      return res.json({
-        success: false,
-        error: modelErr?.message || 'Model temporarily busy. Please try again later.',
-      });
+    const input = Buffer.from(cleanBase64, 'base64');
+    if (input.length === 0) {
+      return res.status(400).json({ success: false, error: 'Image data could not be decoded' });
     }
+
+    const result = await enhanceWithAI(ai, input, { prompt: req.body.prompt });
+
+    return res.json({
+      success: true,
+      enhancedUrl: result.enhancedUrl,
+      width: result.width,
+      height: result.height,
+      size: result.size,
+      fidelity: result.fidelity,
+      aspectRatio: result.aspectRatio,
+      paddedPixels: result.paddedPixels,
+      seed: result.seed,
+      notes: result.notes || 'Cleaned with Gemini generative model',
+    });
   } catch (err: any) {
-    console.warn('Gemini image enhance handler caught error:', err?.message || err);
-    return res.status(200).json({
+    console.warn('Gemini image enhance failed:', err?.message || err);
+    return res.json({
       success: false,
-      error: err?.message || 'Error processing image with Gemini',
+      error: err?.message || 'Model temporarily busy. Please try again later.',
     });
   }
 });
