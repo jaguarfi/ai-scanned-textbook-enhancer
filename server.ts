@@ -259,7 +259,7 @@ app.post('/api/gemini/enhance', async (req, res) => {
       });
     }
 
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const cleanBase64 = stripBase64Prefix(imageBase64);
     const input = Buffer.from(cleanBase64, 'base64');
     if (input.length === 0) {
       return res.status(400).json({ success: false, error: 'Image data could not be decoded' });

@@ -155,38 +155,61 @@ export async function enhanceWithAI(
     .toBuffer();
 
   // --- Generate -----------------------------------------------------------
-  const response = await ai.models.generateContent({
-    model: options.model || 'gemini-3.1-flash-image',
-    contents: {
-      parts: [
-        { inlineData: { data: padded.toString('base64'), mimeType: 'image/png' } },
-        { text: options.prompt || AI_PROMPT },
-      ],
-    },
-    config: {
-      // Greedy decoding. The previous call set no sampling controls at all,
-      // which is why the same page came back with a different background and
-      // different invented details on each run.
-      temperature: 0,
-      seed: AI_SEED,
-      imageConfig: {
-        aspectRatio: ratio.label,
-        imageSize: chooseImageSize(source.width, source.height),
-      },
-    },
-  });
+  const models = [
+    options.model || process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
+    'gemini-2.5-flash-image',
+  ].filter((model, index, availableModels) => availableModels.indexOf(model) === index);
 
   let generated: Buffer | null = null;
   let notes = '';
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData?.data && !generated) {
-      generated = Buffer.from(part.inlineData.data, 'base64');
-    } else if (part.text) {
-      notes += part.text;
+  let lastError: Error | null = null;
+
+  for (const model of models) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: {
+          parts: [
+            { inlineData: { data: padded.toString('base64'), mimeType: 'image/png' } },
+            { text: options.prompt || AI_PROMPT },
+          ],
+        },
+        config: {
+          // Greedy decoding. The previous call set no sampling controls at all,
+          // which is why the same page came back with a different background and
+          // different invented details on each run.
+          temperature: 0,
+          seed: AI_SEED,
+          imageConfig: {
+            aspectRatio: ratio.label,
+            imageSize: chooseImageSize(source.width, source.height),
+          },
+        },
+      });
+
+      notes = '';
+      for (const candidate of response.candidates || []) {
+        for (const part of candidate.content?.parts || []) {
+          if (part.inlineData?.data && !generated) {
+            generated = Buffer.from(part.inlineData.data, 'base64');
+          } else if (part.text) {
+            notes += part.text;
+          }
+        }
+        if (generated) break;
+      }
+
+      if (generated) break;
+      lastError = new Error(notes.trim() || 'No image data returned from model');
+      console.warn(`Gemini model ${model} returned no image data.`);
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`Gemini model ${model} unavailable:`, err?.message || err);
     }
   }
+
   if (!generated) {
-    throw new Error('No image data returned from model');
+    throw lastError || new Error('No image data returned from model');
   }
 
   // --- Crop the padding back off and restore source geometry --------------
