@@ -1,0 +1,6 @@
+{
+  "name": "AI Image Enhancer & PDF Studio",
+  "description": "Upload images to improve resolution and remove noise with AI, detect and resolve duplicates, and compile images into high-quality PDF documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
