@@ -199,68 +199,72 @@ app.post('/api/gemini/enhance', async (req, res) => {
       });
     }
 
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const cleanBase64 = stripBase64Prefix(imageBase64);
 
-    // Try Gemini image enhancement
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType: mimeType,
+    const prompt = req.body.prompt || 'I want a professional, high-resolution version of the uploaded file, restoring its clarity and layout. Recreate the verbatim text and complex layout with absolute precision. All text, tables, annotations, highlighted text, numbers, and formatting from the original must be preserved exactly, but rendered with ultra-crisp clarity. CRITICAL INSTRUCTION: Do NOT add any translations, or your own annotations. Do NOT solve any exercises. Do NOT hallucinate or add any content that is not explicitly present in the original image. Clean up the page by removing any scanning borders, maintaining a clean paper texture and even soft studio lighting.';
+    const models = [
+      process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
+      'gemini-2.5-flash-image',
+    ].filter((model, index, availableModels) => availableModels.indexOf(model) === index);
+    let lastError: any;
+
+    for (const model of models) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  data: cleanBase64,
+                  mimeType,
+                },
               },
+              { text: prompt },
+            ],
+          },
+          config: {
+            imageConfig: {
+              imageSize: '2K',
             },
-            {
-              text: req.body.prompt || 'I want a professional, high-resolution version of the uploaded file, restoring its clarity and layout. Recreate the verbatim text and complex layout with absolute precision. All text, tables, annotations, highlighted text, numbers, and formatting from the original must be preserved exactly, but rendered with ultra-crisp clarity. CRITICAL INSTRUCTION: Do NOT add any translations, or your own annotations. Do NOT solve any exercises. Do NOT hallucinate or add any content that is not explicitly present in the original image. Clean up the page by removing any scanning borders, maintaining a clean paper texture and even soft studio lighting.',
-            },
-          ],
-        },
-        config: {
-          imageConfig: {
-            imageSize: "2K"
-          }
-        }
-      });
-
-      let enhancedBase64 = '';
-      let responseText = '';
-
-      const candidates = response.candidates || [];
-      if (candidates[0]?.content?.parts) {
-        for (const part of candidates[0].content.parts) {
-          if (part.inlineData?.data) {
-            enhancedBase64 = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-            break;
-          } else if (part.text) {
-            responseText += part.text;
-          }
-        }
-      }
-
-      if (enhancedBase64) {
-        return res.json({
-          success: true,
-          enhancedUrl: enhancedBase64,
-          notes: responseText || 'Image reconstructed with Gemini AI',
+          },
         });
-      } else {
-        console.warn('Gemini response returned no inlineData:', JSON.stringify(candidates, null, 2));
-        return res.json({
-          success: false,
-          message: 'No image data returned from model',
-          text: responseText,
-        });
+
+        let enhancedBase64 = '';
+        let responseText = '';
+        const candidates = response.candidates || [];
+
+        for (const candidate of candidates) {
+          for (const part of candidate.content?.parts || []) {
+            if (part.inlineData?.data) {
+              enhancedBase64 = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+              break;
+            }
+            if (part.text) responseText += part.text;
+          }
+          if (enhancedBase64) break;
+        }
+
+        if (enhancedBase64) {
+          return res.json({
+            success: true,
+            enhancedUrl: enhancedBase64,
+            notes: responseText || 'Image reconstructed with Gemini AI',
+          });
+        }
+
+        lastError = new Error(responseText || 'No image data returned from model');
+        console.warn(`Gemini model ${model} returned no image data.`);
+      } catch (modelErr: any) {
+        lastError = modelErr;
+        console.warn(`Gemini model ${model} unavailable:`, modelErr?.message || modelErr);
       }
-    } catch (modelErr: any) {
-      console.warn('Gemini generative image model temporary unavailable:', modelErr?.message || modelErr);
-      return res.json({
-        success: false,
-        error: modelErr?.message || 'Model temporarily busy. Please try again later.',
-      });
     }
+
+    return res.json({
+      success: false,
+      error: lastError?.message || 'Gemini image enhancement is temporarily unavailable. Please try again later.',
+    });
   } catch (err: any) {
     console.warn('Gemini image enhance handler caught error:', err?.message || err);
     return res.status(200).json({
