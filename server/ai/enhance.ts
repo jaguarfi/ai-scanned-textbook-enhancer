@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { GoogleGenAI } from '@google/genai';
 import { measurePaperTone, verifyFidelity } from '../pipeline/analysis';
+import { correctPaperTone } from '../pipeline/ops';
 import { FidelityReport, PaperTone, RgbImage } from '../pipeline/types';
 
 /**
@@ -226,15 +227,30 @@ export async function enhanceWithAI(
   const cropWidth = Math.max(1, Math.min(outWidth - cropLeft, Math.round(source.width * scaleX)));
   const cropHeight = Math.max(1, Math.min(outHeight - cropTop, Math.round(source.height * scaleY)));
 
-  const cropped = await sharp(generated)
+  const croppedRaw = await sharp(generated)
     .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
+    .png()
+    .toBuffer();
+
+  // --- Correct the substrate colour back to the source's paper tone -------
+  // The model is free to redraw the background regardless of what the prompt
+  // asks, and in practice drifts cream or grey paper toward neutral white.
+  // A page-wide diagonal gain (see correctPaperTone) pulls it back without
+  // touching ink, which sits far from paper in brightness and barely moves.
+  const croppedImage = await toRgb(croppedRaw);
+  const generatedPaper = measurePaperTone(croppedImage);
+  correctPaperTone(croppedImage, paper, generatedPaper);
+  const cropped = await sharp(croppedImage.data, {
+    raw: { width: croppedImage.width, height: croppedImage.height, channels: 3 },
+  })
     .png()
     .toBuffer();
 
   // --- Verify against the source -----------------------------------------
   // Compared at the source's own dimensions so the two are pixel-aligned; this
   // copy exists only for measurement, and the full-resolution result is what
-  // gets returned.
+  // gets returned. Verification runs on the colour-corrected image, so the
+  // report reflects what is actually returned.
   const comparable = await sharp(cropped)
     .resize(source.width, source.height, { kernel: 'lanczos3', fit: 'fill' })
     .png()

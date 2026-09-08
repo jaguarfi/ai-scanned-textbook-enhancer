@@ -446,6 +446,36 @@ export function unsharpMask(img: RgbImage, params: PipelineParams): string {
   return `amount ${amount}, radius ${params.sharpenRadius}, clamped to local range +/-${eps}`;
 }
 
+/**
+ * Corrects a page-wide colour-cast mismatch between an image's background and
+ * a target paper tone.
+ *
+ * A generative model has no obligation to keep the substrate colour it was
+ * given, and in practice drifts cream or grey paper toward neutral white.
+ * This is a single per-channel gain - a diagonal colour correction - rather
+ * than a local one, so it fixes a page-wide cast without introducing the
+ * seams a block-wise correction could. Ink sits close to zero, so the same
+ * gain barely moves it, while paper - close to the multiplier's effective
+ * fixed point - moves the most; genuine contrast is not flattened in the
+ * process. Gains are clamped, so a wildly different image cannot be dragged
+ * arbitrarily far from what it actually shows.
+ */
+export function correctPaperTone(img: RgbImage, target: PaperTone, current: PaperTone): string {
+  const { data } = img;
+  const clampGain = (g: number) => Math.max(0.6, Math.min(1.6, g));
+  const gainR = clampGain(target.r / Math.max(1, current.r));
+  const gainG = clampGain(target.g / Math.max(1, current.g));
+  const gainB = clampGain(target.b / Math.max(1, current.b));
+
+  for (let i = 0; i < data.length; i += 3) {
+    data[i] = clamp255(data[i] * gainR);
+    data[i + 1] = clamp255(data[i + 1] * gainG);
+    data[i + 2] = clamp255(data[i + 2] * gainB);
+  }
+
+  return `gain r${gainR.toFixed(2)} g${gainG.toFixed(2)} b${gainB.toFixed(2)}`;
+}
+
 function clamp255(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
 }
