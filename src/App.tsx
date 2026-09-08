@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
 import { Copy, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
-import { EnhancedImageItem, DuplicatePair } from './types';
+import { EnhancedImageItem, DuplicatePair, EnhancementEngine, EnhancementVariant } from './types';
 import {
   computeImageHash,
   findDuplicatePairs,
-  enhanceImageLocally,
   loadImage,
 } from './utils/imageProcessing';
 import { generateSampleImages } from './utils/sampleImages';
@@ -121,13 +120,144 @@ export default function App() {
     showToast(`Added ${newItems.length} images successfully.`, 'success');
   };
 
-  // Enhance with Gemini AI
-  const handleGeminiEnhanceImage = async (targetImage: EnhancedImageItem) => {
+  /**
+   * Records an engine result without discarding the other engine's.
+   *
+   * The legacy enhanced* fields are kept in sync with whichever variant is
+   * selected, so download, ZIP export and PDF compilation keep working
+   * unchanged while the user switches between engines.
+   */
+  const applyVariant = (
+    imageId: string,
+    variant: EnhancementVariant,
+    select: boolean
+  ) => {
+    setImages((prev) =>
+      prev.map((item) => {
+        if (item.id !== imageId) return item;
+
+        const variants = { ...(item.variants || {}), [variant.engine]: variant };
+        const selectedEngine = select ? variant.engine : item.selectedEngine || variant.engine;
+        const active = variants[selectedEngine]!;
+
+        return {
+          ...item,
+          variants,
+          selectedEngine,
+          processingEngine: undefined,
+          status: 'enhanced' as const,
+          progress: 100,
+          enhancedUrl: active.url,
+          enhancedWidth: active.width,
+          enhancedHeight: active.height,
+          enhancedSize: active.size,
+        };
+      })
+    );
+  };
+
+  /** Switches which engine's output is the one exported. */
+  const handleSelectEngine = (imageId: string, engine: EnhancementEngine) => {
+    setImages((prev) =>
+      prev.map((item) => {
+        const variant = item.variants?.[engine];
+        if (item.id !== imageId || !variant) return item;
+        return {
+          ...item,
+          selectedEngine: engine,
+          enhancedUrl: variant.url,
+          enhancedWidth: variant.width,
+          enhancedHeight: variant.height,
+          enhancedSize: variant.size,
+        };
+      })
+    );
+  };
+
+  const markProcessing = (imageId: string, engine: EnhancementEngine, progress: number) => {
     setImages((prev) =>
       prev.map((item) =>
-        item.id === targetImage.id ? { ...item, status: 'processing', progress: 50 } : item
+        item.id === imageId
+          ? { ...item, status: 'processing', processingEngine: engine, progress }
+          : item
       )
     );
+  };
+
+  const markFailed = (imageId: string, message: string) => {
+    setImages((prev) =>
+      prev.map((item) => {
+        if (item.id !== imageId) return item;
+        // Falling back to 'enhanced' preserves an earlier successful variant
+        // rather than throwing away good work because the other engine failed.
+        const hasVariant = Object.keys(item.variants || {}).length > 0;
+        return {
+          ...item,
+          status: hasVariant ? ('enhanced' as const) : ('error' as const),
+          processingEngine: undefined,
+          errorMessage: message,
+        };
+      })
+    );
+  };
+
+  /**
+   * Deterministic restoration.
+   *
+   * Runs server-side through a fixed filter chain: identical input bytes give
+   * identical output bytes every time, and the response carries a fidelity
+   * report measuring what changed between source and result.
+   */
+  const handleDeterministicEnhance = async (targetImage: EnhancedImageItem) => {
+    markProcessing(targetImage.id, 'deterministic', 20);
+
+    try {
+      const response = await fetch('/api/enhance/deterministic', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: targetImage.originalUrl }),
+      });
+      const data = await response.json();
+
+      if (!data.success || !data.enhancedUrl) {
+        throw new Error(data.error || 'Deterministic enhancement failed');
+      }
+
+      applyVariant(
+        targetImage.id,
+        {
+          engine: 'deterministic',
+          url: data.enhancedUrl,
+          width: data.width,
+          height: data.height,
+          size: data.size,
+          createdAt: Date.now(),
+          fidelity: data.fidelity,
+          deskewAngle: data.deskewAngle,
+          paperTone: data.paperTone,
+          stages: data.stages,
+          pipelineVersion: data.pipelineVersion,
+        },
+        true
+      );
+
+      const passed = data.fidelity?.passed;
+      showToast(
+        passed
+          ? `Restored ${targetImage.name} - content verified unchanged`
+          : `Restored ${targetImage.name} - review flagged, see Compare`,
+        passed ? 'success' : 'warning'
+      );
+    } catch (err: any) {
+      console.error('Deterministic enhancement failed:', err);
+      markFailed(targetImage.id, err?.message || 'Deterministic enhancement failed');
+      showToast(`Failed to restore ${targetImage.name}`, 'warning');
+    }
+  };
+
+  // Enhance with Gemini AI
+  const handleGeminiEnhanceImage = async (targetImage: EnhancedImageItem) => {
+    markProcessing(targetImage.id, 'ai', 50);
 
     try {
       const response = await fetch('/api/gemini/enhance', {
@@ -140,127 +270,33 @@ export default function App() {
       });
       const data = await response.json();
 
-      if (data.success && data.enhancedUrl) {
-        const img = await loadImage(data.enhancedUrl);
-        setImages((prev) =>
-          prev.map((item) =>
-            item.id === targetImage.id
-              ? {
-                  ...item,
-                  status: 'enhanced',
-                  progress: 100,
-                  enhancedUrl: data.enhancedUrl,
-                  vectorSvgUrl: undefined,
-                  enhancedWidth: img.naturalWidth || img.width,
-                  enhancedHeight: img.naturalHeight || img.height,
-                  enhancedSize: Math.round(data.enhancedUrl.length * 0.75),
-                  aiMetrics: {
-                    noiseScore: 0,
-                    sharpnessScore: 100,
-                    overallQuality: 100,
-                    compressionArtifacts: 'None',
-                    recommendation: data.notes || 'Processed with Gemini AI Studio Render.',
-                    detectedFeatures: ['AI Generation', 'Studio Lighting', 'Text Restoration'],
-                  },
-                }
-              : item
-          )
-        );
-        showToast(`Enhanced ${targetImage.name} (Gemini AI)`, 'success');
-      } else {
+      if (!data.success || !data.enhancedUrl) {
         throw new Error(data.text || data.error || data.message || 'Failed to process with Gemini');
       }
+
+      const img = await loadImage(data.enhancedUrl);
+      applyVariant(
+        targetImage.id,
+        {
+          engine: 'ai',
+          url: data.enhancedUrl,
+          width: img.naturalWidth || img.width,
+          height: img.naturalHeight || img.height,
+          size: Math.round(data.enhancedUrl.length * 0.75),
+          createdAt: Date.now(),
+          fidelity: data.fidelity,
+          notes: data.notes,
+        },
+        // Only auto-select the AI result if nothing else has been produced;
+        // a verified deterministic result should not be silently replaced.
+        !targetImage.variants?.deterministic
+      );
+
+      showToast(`Enhanced ${targetImage.name} (Gemini AI)`, 'success');
     } catch (err: any) {
       console.error('Enhancement failed:', err);
-      setImages((prev) =>
-        prev.map((item) =>
-          item.id === targetImage.id
-            ? { ...item, status: 'error', errorMessage: err?.message || 'Gemini enhancement failed' }
-            : item
-        )
-      );
+      markFailed(targetImage.id, err?.message || 'Gemini enhancement failed');
       showToast(`Failed to enhance ${targetImage.name} with AI`, 'warning');
-    }
-  };
-
-  // Enhance a single image
-  const handleEnhanceImage = async (targetImage: EnhancedImageItem) => {
-    // Set status to processing
-    setImages((prev) =>
-      prev.map((item) =>
-        item.id === targetImage.id ? { ...item, status: 'processing', progress: 15 } : item
-      )
-    );
-
-    try {
-      // Run local high-performance smart document enhancement
-      const result = await enhanceImageLocally(
-        targetImage.originalUrl,
-        (progress) => {
-          setImages((prev) =>
-            prev.map((item) =>
-              item.id === targetImage.id ? { ...item, progress } : item
-            )
-          );
-        }
-      );
-
-      // Query AI diagnostic analysis in background if server available
-      let serverAiMetrics = result.aiMetrics;
-      try {
-        const aiResponse = await fetch('/api/gemini/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imageBase64: targetImage.originalUrl,
-            mimeType: targetImage.fileType,
-          }),
-        });
-        if (aiResponse.ok) {
-          const aiData = await aiResponse.json();
-          if (aiData.recommendation) {
-            serverAiMetrics = {
-              ...serverAiMetrics,
-              recommendation: aiData.recommendation,
-              noiseScore: aiData.noiseScore ?? serverAiMetrics.noiseScore,
-              sharpnessScore: aiData.sharpnessScore ?? serverAiMetrics.sharpnessScore,
-              compressionArtifacts: aiData.compressionArtifacts ?? serverAiMetrics.compressionArtifacts,
-            };
-          }
-        }
-      } catch (e) {
-        // Fallback to local metrics
-      }
-
-      setImages((prev) =>
-        prev.map((item) =>
-          item.id === targetImage.id
-            ? {
-                ...item,
-                status: 'enhanced',
-                progress: 100,
-                enhancedUrl: result.enhancedUrl,
-                vectorSvgUrl: result.vectorSvgUrl,
-                enhancedWidth: result.width,
-                enhancedHeight: result.height,
-                enhancedSize: result.size,
-                aiMetrics: serverAiMetrics,
-              }
-            : item
-        )
-      );
-
-      showToast(`Enhanced ${targetImage.name} (Smart Auto Processed)`, 'success');
-    } catch (err: any) {
-      console.error('Enhancement failed:', err);
-      setImages((prev) =>
-        prev.map((item) =>
-          item.id === targetImage.id
-            ? { ...item, status: 'error', errorMessage: err?.message || 'Enhancement failed' }
-            : item
-        )
-      );
-      showToast(`Failed to enhance ${targetImage.name}`, 'warning');
     }
   };
 
@@ -270,15 +306,17 @@ export default function App() {
     if (unenhanced.length === 0) return;
 
     setIsEnhancingAll(true);
-    showToast(`Batch enhancing ${unenhanced.length} images...`, 'info');
+    showToast(`Restoring ${unenhanced.length} images...`, 'info');
 
+    // Batch runs the deterministic engine: it is the reproducible one, and
+    // it does not spend an API call per page.
     for (let i = 0; i < unenhanced.length; i++) {
       const img = unenhanced[i];
-      await handleGeminiEnhanceImage(img);
+      await handleDeterministicEnhance(img);
     }
 
     setIsEnhancingAll(false);
-    showToast('All images enhanced successfully!', 'success');
+    showToast('Batch restore finished.', 'success');
   };
 
   // Download a single enhanced image
@@ -452,8 +490,9 @@ export default function App() {
                 <ImageCard
                   key={img.id}
                   image={img}
-                  onEnhance={handleEnhanceImage}
+                  onEnhance={handleDeterministicEnhance}
                   onGeminiEnhance={handleGeminiEnhanceImage}
+                  onSelectEngine={handleSelectEngine}
                   onCompare={(item) => setActiveCompareImageId(item.id)}
                   onDownload={handleDownloadSingle}
                   onRemove={handleRemoveImage}
@@ -470,6 +509,7 @@ export default function App() {
           image={activeCompareImage}
           onClose={() => setActiveCompareImageId(null)}
           onDownload={handleDownloadSingle}
+          onSelectEngine={handleSelectEngine}
         />
       )}
 

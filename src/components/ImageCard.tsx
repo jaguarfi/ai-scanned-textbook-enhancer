@@ -8,14 +8,18 @@ import {
   Eye,
   Maximize2,
   Loader2,
+  ShieldCheck,
+  ShieldAlert,
+  Lock,
 } from 'lucide-react';
-import { EnhancedImageItem } from '../types';
+import { EnhancedImageItem, EnhancementEngine } from '../types';
 import { formatBytes } from '../utils/imageProcessing';
 
 interface ImageCardProps {
   image: EnhancedImageItem;
   onEnhance: (image: EnhancedImageItem) => void;
   onGeminiEnhance?: (image: EnhancedImageItem) => void;
+  onSelectEngine?: (imageId: string, engine: EnhancementEngine) => void;
   onCompare: (image: EnhancedImageItem) => void;
   onDownload: (image: EnhancedImageItem) => void;
   onRemove: (id: string) => void;
@@ -25,6 +29,7 @@ export const ImageCard: React.FC<ImageCardProps> = ({
   image,
   onEnhance,
   onGeminiEnhance,
+  onSelectEngine,
   onCompare,
   onDownload,
   onRemove,
@@ -34,6 +39,9 @@ export const ImageCard: React.FC<ImageCardProps> = ({
 
   const isEnhanced = image.status === 'enhanced';
   const isProcessing = image.status === 'processing';
+
+  const selected = image.selectedEngine;
+  const busyEngine = isProcessing ? image.processingEngine : undefined;
 
   const currentDisplaySrc =
     isEnhanced && !isHoverPeek && image.enhancedUrl
@@ -68,14 +76,14 @@ export const ImageCard: React.FC<ImageCardProps> = ({
           {isEnhanced && (
             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/90 text-white backdrop-blur-sm shadow-xs">
               <Check className="w-3 h-3 stroke-[2.5]" />
-              Enhanced
+              {selected === 'deterministic' ? 'Restored' : 'AI Render'}
             </span>
           )}
 
           {isProcessing && (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-600/90 text-white backdrop-blur-sm shadow-xs animate-pulse">
               <Loader2 className="w-3 h-3 animate-spin" />
-              AI Processing...
+              {busyEngine === 'ai' ? 'AI Processing...' : 'Restoring...'}
             </span>
           )}
 
@@ -167,10 +175,88 @@ export const ImageCard: React.FC<ImageCardProps> = ({
         </div>
 
         {/* Card Footer Actions */}
-        <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 flex-1 justify-end">
-            {isEnhanced ? (
-              <>
+        <div className="pt-3 border-t border-slate-100 space-y-2.5">
+          {isEnhanced && (
+            <>
+              {/* Engine switcher. Both results are kept, so choosing one only
+                  changes which is displayed and exported - nothing is redone. */}
+              <div className="flex bg-slate-100 p-0.5 rounded-lg text-[11px] font-medium">
+                {(['deterministic', 'ai'] as EnhancementEngine[]).map((engine) => {
+                  const variant = image.variants?.[engine];
+                  const label = engine === 'deterministic' ? 'Deterministic' : 'Gemini AI';
+                  const isActive = selected === engine;
+
+                  if (!variant) {
+                    const run = engine === 'deterministic' ? onEnhance : onGeminiEnhance;
+                    return (
+                      <button
+                        key={engine}
+                        type="button"
+                        disabled={isProcessing}
+                        onClick={() => run?.(image)}
+                        className="flex-1 px-2 py-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={`Also run ${label} on this page to compare`}
+                      >
+                        {busyEngine === engine ? (
+                          <Loader2 className="w-3 h-3 animate-spin mx-auto" />
+                        ) : (
+                          <span>+ {label}</span>
+                        )}
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <button
+                      key={engine}
+                      type="button"
+                      onClick={() => onSelectEngine?.(image.id, engine)}
+                      className={`flex-1 px-2 py-1.5 rounded-md transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                        isActive
+                          ? 'bg-white shadow-xs text-slate-900'
+                          : 'text-slate-500 hover:text-slate-900'
+                      }`}
+                    >
+                      {engine === 'deterministic' && <Lock className="w-2.5 h-2.5" />}
+                      <span>{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Fidelity outcome for whichever result is selected. */}
+              {selected && (() => {
+                const variant = image.variants?.[selected];
+                const fidelity = variant?.fidelity;
+
+                if (!fidelity) {
+                  return (
+                    <p className="text-[11px] text-amber-700 flex items-center gap-1">
+                      <ShieldAlert className="w-3 h-3 shrink-0" />
+                      <span>Generated output - content not verified</span>
+                    </p>
+                  );
+                }
+
+                return fidelity.passed ? (
+                  <p className="text-[11px] text-emerald-700 flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3 shrink-0" />
+                    <span>
+                      Verified: nothing added or removed
+                      {typeof variant?.deskewAngle === 'number' && variant.deskewAngle !== 0
+                        ? `, deskewed ${variant.deskewAngle.toFixed(2)}°`
+                        : ''}
+                    </span>
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-rose-700 flex items-center gap-1">
+                    <ShieldAlert className="w-3 h-3 shrink-0" />
+                    <span>{fidelity.warnings.length} fidelity warning{fidelity.warnings.length === 1 ? '' : 's'} - review before use</span>
+                  </p>
+                );
+              })()}
+
+              <div className="flex items-center gap-2 justify-end">
                 <button
                   type="button"
                   onClick={() => onCompare(image)}
@@ -188,30 +274,53 @@ export const ImageCard: React.FC<ImageCardProps> = ({
                   <Download className="w-3.5 h-3.5" />
                   <span>Download</span>
                 </button>
-              </>
-            ) : (
-              <div className="flex gap-2 w-full flex-col">
-                <button
-                  type="button"
-                  disabled={isProcessing}
-                  onClick={() => onGeminiEnhance?.(image)}
-                  className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
-                >
-                  {isProcessing ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Generating...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-200" />
-                      <span>Gemini AI Render</span>
-                    </>
-                  )}
-                </button>
               </div>
-            )}
-          </div>
+            </>
+          )}
+
+          {!isEnhanced && (
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => onEnhance(image)}
+                className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                title="Fixed filter chain. Same input always gives the same output, and the result is verified against the source."
+              >
+                {busyEngine === 'deterministic' ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Restoring...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-3.5 h-3.5 text-slate-300" />
+                    <span>Deterministic Restore</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => onGeminiEnhance?.(image)}
+                className="w-full py-2 px-3 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                title="Generative model. Higher perceived quality, but output varies between runs."
+              >
+                {busyEngine === 'ai' ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Generating...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Gemini AI Render</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
