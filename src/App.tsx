@@ -45,7 +45,19 @@ export default function App() {
   // Toast notification
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'warning' } | null>(null);
 
+  // Whether the server has a Gemini API key configured. Checked once up front
+  // so the AI button can be disabled with a clear reason instead of letting
+  // every click run into a guaranteed failure.
+  const [aiAvailable, setAiAvailable] = useState(true);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then((res) => res.json())
+      .then((data) => setAiAvailable(Boolean(data?.hasApiKey)))
+      .catch(() => setAiAvailable(false));
+  }, []);
 
   const showToast = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
     setToast({ message, type });
@@ -493,6 +505,7 @@ export default function App() {
                   onEnhance={handleDeterministicEnhance}
                   onGeminiEnhance={handleGeminiEnhanceImage}
                   onSelectEngine={handleSelectEngine}
+                  aiAvailable={aiAvailable}
                   onCompare={(item) => setActiveCompareImageId(item.id)}
                   onDownload={handleDownloadSingle}
                   onRemove={handleRemoveImage}

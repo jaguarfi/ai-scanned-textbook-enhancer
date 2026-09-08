@@ -23,6 +23,7 @@ interface ImageCardProps {
   onCompare: (image: EnhancedImageItem) => void;
   onDownload: (image: EnhancedImageItem) => void;
   onRemove: (id: string) => void;
+  aiAvailable?: boolean;
 }
 
 export const ImageCard: React.FC<ImageCardProps> = ({
@@ -33,6 +34,7 @@ export const ImageCard: React.FC<ImageCardProps> = ({
   onCompare,
   onDownload,
   onRemove,
+  aiAvailable = true,
 }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [isHoverPeek, setIsHoverPeek] = useState(false);
@@ -188,14 +190,19 @@ export const ImageCard: React.FC<ImageCardProps> = ({
 
                   if (!variant) {
                     const run = engine === 'deterministic' ? onEnhance : onGeminiEnhance;
+                    const disabledForEngine = isProcessing || (engine === 'ai' && !aiAvailable);
                     return (
                       <button
                         key={engine}
                         type="button"
-                        disabled={isProcessing}
+                        disabled={disabledForEngine}
                         onClick={() => run?.(image)}
                         className="flex-1 px-2 py-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={`Also run ${label} on this page to compare`}
+                        title={
+                          engine === 'ai' && !aiAvailable
+                            ? 'GEMINI_API_KEY is not configured on the server, so this engine is unavailable.'
+                            : `Also run ${label} on this page to compare`
+                        }
                       >
                         {busyEngine === engine ? (
                           <Loader2 className="w-3 h-3 animate-spin mx-auto" />
@@ -302,10 +309,14 @@ export const ImageCard: React.FC<ImageCardProps> = ({
 
               <button
                 type="button"
-                disabled={isProcessing}
+                disabled={isProcessing || !aiAvailable}
                 onClick={() => onGeminiEnhance?.(image)}
-                className="w-full py-2 px-3 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
-                title="Generative model. Higher perceived quality, but output varies between runs."
+                className="w-full py-2 px-3 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-medium shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                title={
+                  aiAvailable
+                    ? 'Generative model. Higher perceived quality, but output varies between runs.'
+                    : 'GEMINI_API_KEY is not configured on the server, so this engine is unavailable.'
+                }
               >
                 {busyEngine === 'ai' ? (
                   <>
@@ -315,7 +326,7 @@ export const ImageCard: React.FC<ImageCardProps> = ({
                 ) : (
                   <>
                     <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Gemini AI Render</span>
+                    <span>{aiAvailable ? 'Gemini AI Render' : 'Gemini AI Unavailable'}</span>
                   </>
                 )}
               </button>
